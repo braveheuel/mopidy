@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import collections
 import logging
@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class Extension(object):
+
     """Base class for Mopidy extensions"""
 
     dist_name = None
@@ -52,7 +53,7 @@ class Extension(object):
         return schema
 
     def get_command(self):
-        """Command to expose to command line users running mopidy.
+        """Command to expose to command line users running ``mopidy``.
 
         :returns:
           Instance of a :class:`~mopidy.commands.Command` class.
@@ -60,12 +61,13 @@ class Extension(object):
         pass
 
     def validate_environment(self):
-        """Checks if the extension can run in the current environment
+        """Checks if the extension can run in the current environment.
 
-        For example, this method can be used to check if all dependencies that
-        are needed are installed. If a problem is found, raise
-        :exc:`~mopidy.exceptions.ExtensionError` with a message explaining the
-        issue.
+        Dependencies described by :file:`setup.py` are checked by Mopidy, so
+        you should not check their presence here.
+
+        If a problem is found, raise :exc:`~mopidy.exceptions.ExtensionError`
+        with a message explaining the issue.
 
         :raises: :exc:`~mopidy.exceptions.ExtensionError`
         :returns: :class:`None`
@@ -87,22 +89,16 @@ class Extension(object):
         the ``frontend`` and ``backend`` registry keys.
 
         This method can also be used for other setup tasks not involving the
-        extension registry. For example, to register custom GStreamer
-        elements::
-
-            def setup(self, registry):
-                from .mixer import SoundspotMixer
-                gobject.type_register(SoundspotMixer)
-                gst.element_register(
-                    SoundspotMixer, 'soundspotmixer', gst.RANK_MARGINAL)
+        extension registry.
 
         :param registry: the extension registry
         :type registry: :class:`Registry`
         """
-        pass
+        raise NotImplementedError
 
 
 class Registry(collections.Mapping):
+
     """Registry of components provided by Mopidy extensions.
 
     Passed to the :meth:`~Extension.setup` method of all extensions. The
@@ -187,10 +183,13 @@ def validate_extension(extension):
             extension.ext_name, ex)
         return False
     except pkg_resources.VersionConflict as ex:
-        found, required = ex.args
-        logger.info(
-            'Disabled extension %s: %s required, but found %s at %s',
-            extension.ext_name, required, found, found.location)
+        if len(ex.args) == 2:
+            found, required = ex.args
+            logger.info(
+                'Disabled extension %s: %s required, but found %s at %s',
+                extension.ext_name, required, found, found.location)
+        else:
+            logger.info('Disabled extension %s: %s', extension.ext_name, ex)
         return False
 
     try:

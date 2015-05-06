@@ -1,6 +1,6 @@
 # encoding: utf-8
 
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import io
 import unittest
@@ -13,7 +13,7 @@ BAD = b'foobarbaz'
 M3U = b"""#EXTM3U
 #EXTINF:123, Sample artist - Sample title
 file:///tmp/foo
-#EXTINF:321,Example Artist - Example title
+#EXTINF:321,Example Artist - Example \xc5\xa7\xc5\x95
 file:///tmp/bar
 #EXTINF:213,Some Artist - Other title
 file:///tmp/baz
@@ -25,7 +25,7 @@ File1=file:///tmp/foo
 Title1=Sample Title
 Length1=123
 File2=file:///tmp/bar
-Title2=Example title
+Title2=Example \xc5\xa7\xc5\x95
 Length2=321
 File3=file:///tmp/baz
 Title3=Other title
@@ -33,21 +33,28 @@ Length3=213
 Version=2
 """
 
-ASX = b"""<asx version="3.0">
-  <title>Example</title>
-  <entry>
-    <title>Sample Title</title>
-    <ref href="file:///tmp/foo" />
-  </entry>
-  <entry>
-    <title>Example title</title>
-    <ref href="file:///tmp/bar" />
-  </entry>
-  <entry>
-    <title>Other title</title>
-    <ref href="file:///tmp/baz" />
-  </entry>
-</asx>
+ASX = b"""<ASX version="3.0">
+  <TITLE>Example</TITLE>
+  <ENTRY>
+    <TITLE>Sample Title</TITLE>
+    <REF href="file:///tmp/foo" />
+  </ENTRY>
+  <ENTRY>
+    <TITLE>Example \xc5\xa7\xc5\x95</TITLE>
+    <REF href="file:///tmp/bar" />
+  </ENTRY>
+  <ENTRY>
+    <TITLE>Other title</TITLE>
+    <REF href="file:///tmp/baz" />
+  </ENTRY>
+</ASX>
+"""
+
+SIMPLE_ASX = b"""<ASX version="3.0">
+  <ENTRY href="file:///tmp/foo" />
+  <ENTRY href="file:///tmp/bar" />
+  <ENTRY href="file:///tmp/baz" />
+</ASX>
 """
 
 XSPF = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -58,7 +65,7 @@ XSPF = b"""<?xml version="1.0" encoding="UTF-8"?>
       <location>file:///tmp/foo</location>
     </track>
     <track>
-      <title>Example title</title>
+      <title>Example \xc5\xa7\xc5\x95</title>
       <location>file:///tmp/bar</location>
     </track>
     <track>
@@ -71,6 +78,7 @@ XSPF = b"""<?xml version="1.0" encoding="UTF-8"?>
 
 
 class TypeFind(object):
+
     def __init__(self, data):
         self.data = data
 
@@ -116,6 +124,13 @@ class PlsPlaylistTest(BasePlaylistTest, unittest.TestCase):
 
 class AsxPlsPlaylistTest(BasePlaylistTest, unittest.TestCase):
     valid = ASX
+    invalid = BAD
+    detect = staticmethod(playlists.detect_asx_header)
+    parse = staticmethod(playlists.parse_asx)
+
+
+class SimpleAsxPlsPlaylistTest(BasePlaylistTest, unittest.TestCase):
+    valid = SIMPLE_ASX
     invalid = BAD
     detect = staticmethod(playlists.detect_asx_header)
     parse = staticmethod(playlists.parse_asx)

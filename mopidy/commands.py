@@ -1,4 +1,4 @@
-from __future__ import print_function, unicode_literals
+from __future__ import absolute_import, print_function, unicode_literals
 
 import argparse
 import collections
@@ -10,10 +10,10 @@ import glib
 
 import gobject
 
-from mopidy import config as config_lib
+from mopidy import config as config_lib, exceptions
 from mopidy.audio import Audio
 from mopidy.core import Core
-from mopidy.utils import deps, process, versioning
+from mopidy.utils import deps, process, timer, versioning
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,9 @@ def config_override_type(value):
 
 
 class _ParserError(Exception):
-    pass
+
+    def __init__(self, message):
+        self.message = message
 
 
 class _HelpError(Exception):
@@ -46,11 +48,13 @@ class _HelpError(Exception):
 
 
 class _ArgumentParser(argparse.ArgumentParser):
+
     def error(self, message):
         raise _ParserError(message)
 
 
 class _HelpAction(argparse.Action):
+
     def __init__(self, option_strings, dest=None, help=None):
         super(_HelpAction, self).__init__(
             option_strings=option_strings,
@@ -64,6 +68,7 @@ class _HelpAction(argparse.Action):
 
 
 class Command(object):
+
     """Command parser and runner for building trees of commands.
 
     This class provides a wraper around :class:`argparse.ArgumentParser`
@@ -100,7 +105,7 @@ class Command(object):
         self._children[name] = command
 
     def add_argument(self, *args, **kwargs):
-        """Add am argument to the parser.
+        """Add an argument to the parser.
 
         This method takes all the same arguments as the
         :class:`argparse.ArgumentParser` version of this method.
@@ -219,13 +224,14 @@ class Command(object):
     def run(self, *args, **kwargs):
         """Run the command.
 
-        Must be implemented by sub-classes that are not simply and intermediate
+        Must be implemented by sub-classes that are not simply an intermediate
         in the command namespace.
         """
         raise NotImplementedError
 
 
 class RootCommand(Command):
+
     def __init__(self):
         super(RootCommand, self).__init__()
         self.set(base_verbosity_level=0)
@@ -261,29 +267,83 @@ class RootCommand(Command):
     def run(self, args, config):
         loop = gobject.MainLoop()
 
+        mixer_class = self.get_mixer_class(config, args.registry['mixer'])
         backend_classes = args.registry['backend']
         frontend_classes = args.registry['frontend']
 
+        exit_status_code = 0
         try:
-            audio = self.start_audio(config)
+            mixer = None
+            if mixer_class is not None:
+                mixer = self.start_mixer(config, mixer_class)
+            audio = self.start_audio(config, mixer)
             backends = self.start_backends(config, backend_classes, audio)
-            core = self.start_core(audio, backends)
+            core = self.start_core(config, mixer, backends, audio)
             self.start_frontends(config, frontend_classes, core)
             loop.run()
+        except (exceptions.BackendError,
+                exceptions.FrontendError,
+                exceptions.MixerError):
+            logger.info('Initialization error. Exiting...')
+            exit_status_code = 1
         except KeyboardInterrupt:
             logger.info('Interrupted. Exiting...')
-            return
+        except Exception:
+            logger.exception('Uncaught exception')
         finally:
             loop.quit()
             self.stop_frontends(frontend_classes)
             self.stop_core()
             self.stop_backends(backend_classes)
             self.stop_audio()
+            if mixer_class is not None:
+                self.stop_mixer(mixer_class)
             process.stop_remaining_actors()
+            return exit_status_code
 
-    def start_audio(self, config):
+    def get_mixer_class(self, config, mixer_classes):
+        logger.debug(
+            'Available Mopidy mixers: %s',
+            ', '.join(m.__name__ for m in mixer_classes) or 'none')
+
+        if config['audio']['mixer'] == 'none':
+            logger.debug('Mixer disabled')
+            return None
+
+        selected_mixers = [
+            m for m in mixer_classes if m.name == config['audio']['mixer']]
+        if len(selected_mixers) != 1:
+            logger.error(
+                'Did not find unique mixer "%s". Alternatives are: %s',
+                config['audio']['mixer'],
+                ', '.join([m.name for m in mixer_classes]) + ', none' or
+                'none')
+            process.exit_process()
+        return selected_mixers[0]
+
+    def start_mixer(self, config, mixer_class):
+        try:
+            logger.info('Starting Mopidy mixer: %s', mixer_class.__name__)
+            mixer = mixer_class.start(config=config).proxy()
+            self.configure_mixer(config, mixer)
+            return mixer
+        except exceptions.MixerError as exc:
+            logger.error(
+                'Mixer (%s) initialization error: %s',
+                mixer_class.__name__, exc.message)
+            raise
+
+    def configure_mixer(self, config, mixer):
+        volume = config['audio']['mixer_volume']
+        if volume is not None:
+            mixer.set_volume(volume)
+            logger.info('Mixer volume set to %d', volume)
+        else:
+            logger.debug('Mixer volume left unchanged')
+
+    def start_audio(self, config, mixer):
         logger.info('Starting Mopidy audio')
-        return Audio.start(config=config).proxy()
+        return Audio.start(config=config, mixer=mixer).proxy()
 
     def start_backends(self, config, backend_classes, audio):
         logger.info(
@@ -292,14 +352,23 @@ class RootCommand(Command):
 
         backends = []
         for backend_class in backend_classes:
-            backend = backend_class.start(config=config, audio=audio).proxy()
-            backends.append(backend)
+            try:
+                with timer.time_logger(backend_class.__name__):
+                    backend = backend_class.start(
+                        config=config, audio=audio).proxy()
+                backends.append(backend)
+            except exceptions.BackendError as exc:
+                logger.error(
+                    'Backend (%s) initialization error: %s',
+                    backend_class.__name__, exc.message)
+                raise
 
         return backends
 
-    def start_core(self, audio, backends):
+    def start_core(self, config, mixer, backends, audio):
         logger.info('Starting Mopidy core')
-        return Core.start(audio=audio, backends=backends).proxy()
+        return Core.start(
+            config=config, mixer=mixer, backends=backends, audio=audio).proxy()
 
     def start_frontends(self, config, frontend_classes, core):
         logger.info(
@@ -307,7 +376,14 @@ class RootCommand(Command):
             ', '.join(f.__name__ for f in frontend_classes) or 'none')
 
         for frontend_class in frontend_classes:
-            frontend_class.start(config=config, core=core)
+            try:
+                with timer.time_logger(frontend_class.__name__):
+                    frontend_class.start(config=config, core=core)
+            except exceptions.FrontendError as exc:
+                logger.error(
+                    'Frontend (%s) initialization error: %s',
+                    frontend_class.__name__, exc.message)
+                raise
 
     def stop_frontends(self, frontend_classes):
         logger.info('Stopping Mopidy frontends')
@@ -326,6 +402,10 @@ class RootCommand(Command):
     def stop_audio(self):
         logger.info('Stopping Mopidy audio')
         process.stop_actors_by_class(Audio)
+
+    def stop_mixer(self, mixer_class):
+        logger.info('Stopping Mopidy mixer')
+        process.stop_actors_by_class(mixer_class)
 
 
 class ConfigCommand(Command):

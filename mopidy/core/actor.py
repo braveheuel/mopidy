@@ -1,79 +1,102 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import collections
 import itertools
 
 import pykka
 
-from mopidy import audio, backend
+from mopidy import audio, backend, mixer
 from mopidy.audio import PlaybackState
+from mopidy.core.history import HistoryController
 from mopidy.core.library import LibraryController
 from mopidy.core.listener import CoreListener
+from mopidy.core.mixer import MixerController
 from mopidy.core.playback import PlaybackController
 from mopidy.core.playlists import PlaylistsController
 from mopidy.core.tracklist import TracklistController
 from mopidy.utils import versioning
+from mopidy.utils.deprecation import deprecated_property
 
 
-class Core(pykka.ThreadingActor, audio.AudioListener, backend.BackendListener):
+class Core(
+        pykka.ThreadingActor, audio.AudioListener, backend.BackendListener,
+        mixer.MixerListener):
+
     library = None
-    """The library controller. An instance of
-    :class:`mopidy.core.LibraryController`."""
+    """An instance of :class:`~mopidy.core.LibraryController`"""
+
+    history = None
+    """An instance of :class:`~mopidy.core.HistoryController`"""
+
+    mixer = None
+    """An instance of :class:`~mopidy.core.MixerController`"""
 
     playback = None
-    """The playback controller. An instance of
-    :class:`mopidy.core.PlaybackController`."""
+    """An instance of :class:`~mopidy.core.PlaybackController`"""
 
     playlists = None
-    """The playlists controller. An instance of
-    :class:`mopidy.core.PlaylistsController`."""
+    """An instance of :class:`~mopidy.core.PlaylistsController`"""
 
     tracklist = None
-    """The tracklist controller. An instance of
-    :class:`mopidy.core.TracklistController`."""
+    """An instance of :class:`~mopidy.core.TracklistController`"""
 
-    def __init__(self, audio=None, backends=None):
+    def __init__(self, config=None, mixer=None, backends=None, audio=None):
         super(Core, self).__init__()
+
+        self._config = config
 
         self.backends = Backends(backends)
 
         self.library = LibraryController(backends=self.backends, core=self)
-
-        self.playback = PlaybackController(
-            audio=audio, backends=self.backends, core=self)
-
-        self.playlists = PlaylistsController(
-            backends=self.backends, core=self)
-
+        self.history = HistoryController()
+        self.mixer = MixerController(mixer=mixer)
+        self.playback = PlaybackController(backends=self.backends, core=self)
+        self.playlists = PlaylistsController(backends=self.backends, core=self)
         self.tracklist = TracklistController(core=self)
 
+        self.audio = audio
+
     def get_uri_schemes(self):
+        """Get list of URI schemes we can handle"""
         futures = [b.uri_schemes for b in self.backends]
         results = pykka.get_all(futures)
         uri_schemes = itertools.chain(*results)
         return sorted(uri_schemes)
 
-    uri_schemes = property(get_uri_schemes)
-    """List of URI schemes we can handle"""
+    uri_schemes = deprecated_property(get_uri_schemes)
+    """
+    .. deprecated:: 1.0
+        Use :meth:`get_uri_schemes` instead.
+    """
 
     def get_version(self):
+        """Get version of the Mopidy core API"""
         return versioning.get_version()
 
-    version = property(get_version)
-    """Version of the Mopidy core API"""
+    version = deprecated_property(get_version)
+    """
+    .. deprecated:: 1.0
+        Use :meth:`get_version` instead.
+    """
 
     def reached_end_of_stream(self):
-        self.playback.on_end_of_track()
+        self.playback._on_end_of_track()
 
-    def state_changed(self, old_state, new_state):
+    def stream_changed(self, uri):
+        self.playback._on_stream_changed(uri)
+
+    def state_changed(self, old_state, new_state, target_state):
         # XXX: This is a temporary fix for issue #232 while we wait for a more
         # permanent solution with the implementation of issue #234. When the
         # Spotify play token is lost, the Spotify backend pauses audio
         # playback, but mopidy.core doesn't know this, so we need to update
         # mopidy.core's state to match the actual state in mopidy.audio. If we
         # don't do this, clients will think that we're still playing.
-        if (new_state == PlaybackState.PAUSED
-                and self.playback.state != PlaybackState.PAUSED):
+
+        # We ignore cases when target state is set as this is buffering
+        # updates (at least for now) and we need to get #234 fixed...
+        if (new_state == PlaybackState.PAUSED and not target_state and
+                self.playback.state != PlaybackState.PAUSED):
             self.playback.state = new_state
             self.playback._trigger_track_playback_paused()
 
@@ -81,8 +104,33 @@ class Core(pykka.ThreadingActor, audio.AudioListener, backend.BackendListener):
         # Forward event from backend to frontends
         CoreListener.send('playlists_loaded')
 
+    def volume_changed(self, volume):
+        # Forward event from mixer to frontends
+        CoreListener.send('volume_changed', volume=volume)
+
+    def mute_changed(self, mute):
+        # Forward event from mixer to frontends
+        CoreListener.send('mute_changed', mute=mute)
+
+    def tags_changed(self, tags):
+        if not self.audio or 'title' not in tags:
+            return
+
+        tags = self.audio.get_current_tags().get()
+        if not tags:
+            return
+
+        # TODO: this limits us to only streams that set organization, this is
+        # a hack to make sure we don't emit stream title changes for plain
+        # tracks. We need a better way to decide if something is a stream.
+        if 'title' in tags and tags['title'] and 'organization' in tags:
+            title = tags['title'][0]
+            self.playback._stream_title = title
+            CoreListener.send('stream_title_changed', title=title)
+
 
 class Backends(list):
+
     def __init__(self, backends):
         super(Backends, self).__init__(backends)
 
@@ -92,7 +140,9 @@ class Backends(list):
         self.with_playlists = collections.OrderedDict()
 
         backends_by_scheme = {}
-        name = lambda b: b.actor_ref.actor_class.__name__
+
+        def name(b):
+            return b.actor_ref.actor_class.__name__
 
         for b in backends:
             has_library = b.has_library().get()

@@ -1,10 +1,11 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import functools
 import itertools
 
 from mopidy.models import Track
 from mopidy.mpd import exceptions, protocol, translator
+from mopidy.utils import deprecation
 
 _SEARCH_MAPPING = {
     'album': 'album',
@@ -30,6 +31,15 @@ _LIST_MAPPING = {
     'genre': 'genre',
     'performer': 'performer'}
 
+_LIST_NAME_MAPPING = {
+    'album': 'Album',
+    'albumartist': 'AlbumArtist',
+    'artist': 'Artist',
+    'composer': 'Composer',
+    'date': 'Date',
+    'genre': 'Genre',
+    'performer': 'Performer'}
+
 
 def _query_from_mpd_search_parameters(parameters, mapping):
     query = {}
@@ -41,7 +51,9 @@ def _query_from_mpd_search_parameters(parameters, mapping):
             raise exceptions.MpdArgError('incorrect arguments')
         if not parameters:
             raise ValueError
-        query.setdefault(field, []).append(parameters.pop(0))
+        value = parameters.pop(0)
+        if value.strip():
+            query.setdefault(field, []).append(value)
     return query
 
 
@@ -89,7 +101,7 @@ def count(context, *args):
         query = _query_from_mpd_search_parameters(args, _SEARCH_MAPPING)
     except ValueError:
         raise exceptions.MpdArgError('incorrect arguments')
-    results = context.core.library.find_exact(**query).get()
+    results = context.core.library.search(query=query, exact=True).get()
     result_tracks = _get_tracks(results)
     return [
         ('songs', len(result_tracks)),
@@ -130,7 +142,8 @@ def find(context, *args):
     except ValueError:
         return
 
-    results = context.core.library.find_exact(**query).get()
+    with deprecation.ignore('core.library.search:empty_query'):
+        results = context.core.library.search(query=query, exact=True).get()
     result_tracks = []
     if ('artist' not in query and
             'albumartist' not in query and
@@ -157,8 +170,13 @@ def findadd(context, *args):
         query = _query_from_mpd_search_parameters(args, _SEARCH_MAPPING)
     except ValueError:
         return
-    results = context.core.library.find_exact(**query).get()
-    context.core.tracklist.add(_get_tracks(results))
+
+    results = context.core.library.search(query=query, exact=True).get()
+
+    with deprecation.ignore('core.tracklist.add:tracks_arg'):
+        # TODO: for now just use tracks as other wise we have to lookup the
+        # tracks we just got from the search.
+        context.core.tracklist.add(tracks=_get_tracks(results)).get()
 
 
 @protocol.commands.add('list')
@@ -244,109 +262,32 @@ def list_(context, *args):
     - does not add quotes around the field argument.
     - capitalizes the field argument.
     """
-    parameters = list(args)
-    if not parameters:
+    params = list(args)
+    if not params:
         raise exceptions.MpdArgError('incorrect arguments')
-    field = parameters.pop(0).lower()
+    field = params.pop(0).lower()
 
     if field not in _LIST_MAPPING:
         raise exceptions.MpdArgError('incorrect arguments')
 
-    if len(parameters) == 1:
+    query = None
+    if len(params) == 1:
         if field != 'album':
             raise exceptions.MpdArgError('should be "Album" for 3 arguments')
-        return _list_artist(context, {'artist': parameters})
+        if params[0].strip():
+            query = {'artist': params}
+    else:
+        try:
+            query = _query_from_mpd_search_parameters(params, _LIST_MAPPING)
+        except exceptions.MpdArgError as e:
+            e.message = 'not able to parse args'
+            raise
+        except ValueError:
+            return
 
-    try:
-        query = _query_from_mpd_search_parameters(parameters, _LIST_MAPPING)
-    except exceptions.MpdArgError as e:
-        e.message = 'not able to parse args'
-        raise
-    except ValueError:
-        return
-
-    if field == 'artist':
-        return _list_artist(context, query)
-    if field == 'albumartist':
-        return _list_albumartist(context, query)
-    elif field == 'album':
-        return _list_album(context, query)
-    elif field == 'composer':
-        return _list_composer(context, query)
-    elif field == 'performer':
-        return _list_performer(context, query)
-    elif field == 'date':
-        return _list_date(context, query)
-    elif field == 'genre':
-        return _list_genre(context, query)
-
-
-def _list_artist(context, query):
-    artists = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        for artist in track.artists:
-            if artist.name:
-                artists.add(('Artist', artist.name))
-    return artists
-
-
-def _list_albumartist(context, query):
-    albumartists = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        if track.album:
-            for artist in track.album.artists:
-                if artist.name:
-                    albumartists.add(('AlbumArtist', artist.name))
-    return albumartists
-
-
-def _list_album(context, query):
-    albums = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        if track.album and track.album.name:
-            albums.add(('Album', track.album.name))
-    return albums
-
-
-def _list_composer(context, query):
-    composers = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        for composer in track.composers:
-            if composer.name:
-                composers.add(('Composer', composer.name))
-    return composers
-
-
-def _list_performer(context, query):
-    performers = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        for performer in track.performers:
-            if performer.name:
-                performers.add(('Performer', performer.name))
-    return performers
-
-
-def _list_date(context, query):
-    dates = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        if track.date:
-            dates.add(('Date', track.date))
-    return dates
-
-
-def _list_genre(context, query):
-    genres = set()
-    results = context.core.library.find_exact(**query).get()
-    for track in _get_tracks(results):
-        if track.genre:
-            genres.add(('Genre', track.genre))
-    return genres
+    name = _LIST_NAME_MAPPING[field]
+    result = context.core.library.get_distinct(field, query)
+    return [(name, value) for value in result.get()]
 
 
 @protocol.commands.add('listall')
@@ -357,6 +298,13 @@ def listall(context, uri=None):
         ``listall [URI]``
 
         Lists all songs and directories in ``URI``.
+
+        Do not use this command. Do not manage a client-side copy of MPD's
+        database. That is fragile and adds huge overhead. It will break with
+        large databases. Instead, query MPD whenever you need something.
+
+
+    .. warning:: This command is disabled by default in Mopidy installs.
     """
     result = []
     for path, track_ref in context.browse(uri, lookup=False):
@@ -379,14 +327,22 @@ def listallinfo(context, uri=None):
 
         Same as ``listall``, except it also returns metadata info in the
         same format as ``lsinfo``.
+
+        Do not use this command. Do not manage a client-side copy of MPD's
+        database. That is fragile and adds huge overhead. It will break with
+        large databases. Instead, query MPD whenever you need something.
+
+
+    .. warning:: This command is disabled by default in Mopidy installs.
     """
     result = []
     for path, lookup_future in context.browse(uri):
         if not lookup_future:
             result.append(('directory', path))
         else:
-            for track in lookup_future.get():
-                result.extend(translator.track_to_mpd_format(track))
+            for tracks in lookup_future.get().values():
+                for track in tracks:
+                    result.extend(translator.track_to_mpd_format(track))
     return result
 
 
@@ -408,19 +364,17 @@ def lsinfo(context, uri=None):
     ""``, and ``lsinfo "/"``.
     """
     result = []
-    if uri in (None, '', '/'):
-        result.extend(protocol.stored_playlists.listplaylists(context))
-
     for path, lookup_future in context.browse(uri, recursive=False):
         if not lookup_future:
             result.append(('directory', path.lstrip('/')))
         else:
-            tracks = lookup_future.get()
-            if tracks:
-                result.extend(translator.track_to_mpd_format(tracks[0]))
+            for tracks in lookup_future.get().values():
+                if tracks:
+                    result.extend(translator.track_to_mpd_format(tracks[0]))
 
-    if not result:
-        raise exceptions.MpdNoExistError('Not found')
+    if uri in (None, '', '/'):
+        result.extend(protocol.stored_playlists.listplaylists(context))
+
     return result
 
 
@@ -468,7 +422,8 @@ def search(context, *args):
         query = _query_from_mpd_search_parameters(args, _SEARCH_MAPPING)
     except ValueError:
         return
-    results = context.core.library.search(**query).get()
+    with deprecation.ignore('core.library.search:empty_query'):
+        results = context.core.library.search(query).get()
     artists = [_artist_as_track(a) for a in _get_artists(results)]
     albums = [_album_as_track(a) for a in _get_albums(results)]
     tracks = _get_tracks(results)
@@ -492,8 +447,13 @@ def searchadd(context, *args):
         query = _query_from_mpd_search_parameters(args, _SEARCH_MAPPING)
     except ValueError:
         return
-    results = context.core.library.search(**query).get()
-    context.core.tracklist.add(_get_tracks(results))
+
+    results = context.core.library.search(query).get()
+
+    with deprecation.ignore('core.tracklist.add:tracks_arg'):
+        # TODO: for now just use tracks as other wise we have to lookup the
+        # tracks we just got from the search.
+        context.core.tracklist.add(_get_tracks(results)).get()
 
 
 @protocol.commands.add('searchaddpl')
@@ -519,13 +479,14 @@ def searchaddpl(context, *args):
         query = _query_from_mpd_search_parameters(parameters, _SEARCH_MAPPING)
     except ValueError:
         return
-    results = context.core.library.search(**query).get()
+    results = context.core.library.search(query).get()
 
-    playlist = context.lookup_playlist_from_name(playlist_name)
+    uri = context.lookup_playlist_uri_from_name(playlist_name)
+    playlist = uri is not None and context.core.playlists.lookup(uri).get()
     if not playlist:
         playlist = context.core.playlists.create(playlist_name).get()
     tracks = list(playlist.tracks) + _get_tracks(results)
-    playlist = playlist.copy(tracks=tracks)
+    playlist = playlist.replace(tracks=tracks)
     context.core.playlists.save(playlist)
 
 

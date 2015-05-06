@@ -8,18 +8,6 @@ We've made a JavaScript library, Mopidy.js, which wraps the
 :ref:`websocket-api` and gets you quickly started with working on your client
 instead of figuring out how to communicate with Mopidy.
 
-.. warning:: API stability
-
-    Since the Mopidy.js API exposes our internal core API directly it is to be
-    regarded as **experimental**. We cannot promise to keep any form of
-    backwards compatibility between releases as we will need to change the core
-    API while working out how to support new use cases. Thus, if you use this
-    API, you must expect to do small adjustments to your client for every
-    release of Mopidy.
-
-    From Mopidy 1.0 and onwards, we intend to keep the core API far more
-    stable.
-
 
 Getting the library for browser use
 ===================================
@@ -66,15 +54,16 @@ After npm completes, you can import Mopidy.js using ``require()``:
 Getting the library for development on the library
 ==================================================
 
-If you want to work on the Mopidy.js library itself, you'll find a complete
-development setup in the ``js/`` dir in our repo. The instructions in
-``js/README.md`` will guide you on your way.
+If you want to work on the Mopidy.js library itself, you'll find the source
+code and a complete development setup in the `Mopidy.js Git repo
+<https://github.com/mopidy/mopidy.js>`_. The instructions in ``README.md`` will
+guide you on your way.
 
 
 Creating an instance
 ====================
 
-Once you got Mopidy.js loaded, you need to create an instance of the wrapper:
+Once you have Mopidy.js loaded, you need to create an instance of the wrapper:
 
 .. code-block:: js
 
@@ -99,6 +88,58 @@ later:
     var mopidy = new Mopidy({autoConnect: false});
     // ... do other stuff, like hooking up events ...
     mopidy.connect();
+
+When creating an instance, you can specify the following settings:
+
+``autoConnect``
+    Whether or not to connect to the WebSocket on instance creation. Defaults
+    to true.
+
+``backoffDelayMin``
+    The minimum number of milliseconds to wait after a connection error before
+    we try to reconnect. For every failed attempt, the backoff delay is doubled
+    until it reaches ``backoffDelayMax``. Defaults to 1000.
+
+``backoffDelayMax``
+    The maximum number of milliseconds to wait after a connection error before
+    we try to reconnect. Defaults to 64000.
+
+``callingConvention``
+    Which calling convention to use when calling methods.
+
+    If set to "by-position-only", methods expect to be called with positional
+    arguments, like ``mopidy.foo.bar(null, true, 2)``.
+
+    If set to "by-position-or-by-name", methods expect to be called either with
+    an array of position arguments, like ``mopidy.foo.bar([null, true, 2])``,
+    or with an object of named arguments, like ``mopidy.foo.bar({id: 2})``. The
+    advantage of the "by-position-or-by-name" calling convention is that
+    arguments with default values can be left out of the named argument object.
+    Using named arguments also makes the code more readable, and more resistent
+    to future API changes.
+
+    .. note::
+
+        For backwards compatibility, the default is "by-position-only". In the
+        future, the default will change to "by-position-or-by-name". You should
+        explicitly set this setting to your choice, so you won't be affected
+        when the default changes.
+
+    .. versionadded:: 0.19 (Mopidy.js 0.4)
+
+``console``
+    If set, this object will be used to log errors from Mopidy.js. This is
+    mostly useful for testing Mopidy.js.
+
+``webSocket``
+    An existing WebSocket object to be used instead of creating a new
+    WebSocket. Defaults to undefined.
+
+``webSocketUrl``
+    URL used when creating new WebSocket objects. Defaults to
+    ``ws://<document.location.host>/mopidy/ws``, or
+    ``ws://localhost/mopidy/ws`` if ``document.location.host`` isn't
+    available, like it is in the browser environment.
 
 
 Hooking up to events
@@ -145,7 +186,8 @@ Once your Mopidy.js object has connected to the Mopidy server and emits the
 
 Any calls you make before the ``state:online`` event is emitted will fail. If
 you've hooked up an errback (more on that a bit later) to the promise returned
-from the call, the errback will be called with an error message.
+from the call, the errback will be called with a ``Mopidy.ConnectionError``
+instance.
 
 All methods in Mopidy's :ref:`core-api` is available via Mopidy.js. The core
 API attributes is *not* available, but that shouldn't be a problem as we've
@@ -204,28 +246,41 @@ Instead, typical usage will look like this:
         }
     };
 
-    mopidy.playback.getCurrentTrack().then(
-        printCurrentTrack, console.error.bind(console));
+    mopidy.playback.getCurrentTrack()
+        .done(printCurrentTrack);
 
-The first function passed to ``then()``, ``printCurrentTrack``, is the callback
-that will be called if the method call succeeds. The second function,
-``console.error``, is the errback that will be called if anything goes wrong.
-If you don't hook up an errback, debugging will be hard as errors will silently
-go missing.
+The function passed to ``done()``, ``printCurrentTrack``, is the callback
+that will be called if the method call succeeds. If anything goes wrong,
+``done()`` will throw an exception.
 
-For debugging, you may be interested in errors from function without
-interesting return values as well. In that case, you can pass ``null`` as the
-callback:
+If you want to explicitly handle any errors and avoid an exception being
+thrown, you can register an error handler function anywhere in a promise
+chain. The function will be called with the error object as the only argument:
 
 .. code-block:: js
 
-    mopidy.playback.next().then(null, console.error.bind(console));
+    mopidy.playback.getCurrentTrack()
+        .catch(console.error.bind(console));
+        .done(printCurrentTrack);
+
+You can also register the error handler at the end of the promise chain by
+passing it as the second argument to ``done()``:
+
+.. code-block:: js
+
+    mopidy.playback.getCurrentTrack()
+        .done(printCurrentTrack, console.error.bind(console));
+
+If you don't hook up an error handler function and never call ``done()`` on the
+promise object, when.js will log warnings to the console that you have
+unhandled errors. In general, unhandled errors will not go silently missing.
 
 The promise objects returned by Mopidy.js adheres to the `CommonJS Promises/A
 <http://wiki.commonjs.org/wiki/Promises/A>`_ standard. We use the
-implementation known as `when.js <https://github.com/cujojs/when>`_. Please
-refer to when.js' documentation or the standard for further details on how to
-work with promise objects.
+implementation known as `when.js <https://github.com/cujojs/when>`_, and
+reexport it as ``Mopidy.when`` so you don't have to duplicate the dependency.
+Please refer to when.js' documentation or the standard for further details on
+how to work with promise objects.
 
 
 Cleaning up
@@ -283,44 +338,40 @@ Example to get started with
 
    .. code-block:: js
 
-        var consoleError = console.error.bind(console);
-
         var trackDesc = function (track) {
             return track.name + " by " + track.artists[0].name +
                 " from " + track.album.name;
         };
 
-        var queueAndPlayFirstPlaylist = function () {
+        var queueAndPlay = function (playlistNum, trackNum) {
+            playlistNum = playlistNum || 0;
+            trackNum = trackNum || 0;
             mopidy.playlists.getPlaylists().then(function (playlists) {
-                var playlist = playlists[0];
+                var playlist = playlists[playlistNum];
                 console.log("Loading playlist:", playlist.name);
-                mopidy.tracklist.add(playlist.tracks).then(function (tlTracks) {
-                    mopidy.playback.play(tlTracks[0]).then(function () {
-                        mopidy.playback.getCurrentTrack().then(function (track) {
+                return mopidy.tracklist.add(playlist.tracks).then(function (tlTracks) {
+                    return mopidy.playback.play(tlTracks[trackNum]).then(function () {
+                        return mopidy.playback.getCurrentTrack().then(function (track) {
                             console.log("Now playing:", trackDesc(track));
-                        }, consoleError);
-                    }, consoleError);
-                }, consoleError);
-            }, consoleError);
+                        });
+                    });
+                });
+            })
+            .catch(console.error.bind(console)) // Handle errors here
+            .done();                            // ...or they'll be thrown here
         };
 
         var mopidy = new Mopidy();             // Connect to server
         mopidy.on(console.log.bind(console));  // Log all events
-        mopidy.on("state:online", queueAndPlayFirstPlaylist);
+        mopidy.on("state:online", queueAndPlay);
 
    Approximately the same behavior in a more functional style, using chaining
-   of promisies.
+   of promises.
 
    .. code-block:: js
 
-        var consoleError = console.error.bind(console);
-
-        var getFirst = function (list) {
-            return list[0];
-        };
-
-        var extractTracks = function (playlist) {
-            return playlist.tracks;
+        var get = function (key, object) {
+            return object[key];
         };
 
         var printTypeAndName = function (model) {
@@ -339,34 +390,41 @@ Example to get started with
             // By returning any arguments we get, the function can be inserted
             // anywhere in the chain.
             var args = arguments;
-            return mopidy.playback.getCurrentTrack().then(function (track) {
-                console.log("Now playing:", trackDesc(track));
-                return args;
-            });
+            return mopidy.playback.getCurrentTrack()
+                .then(function (track) {
+                    console.log("Now playing:", trackDesc(track));
+                    return args;
+                });
         };
 
-        var queueAndPlayFirstPlaylist = function () {
+        var queueAndPlay = function (playlistNum, trackNum) {
+            playlistNum = playlistNum || 0;
+            trackNum = trackNum || 0;
             mopidy.playlists.getPlaylists()
                 // => list of Playlists
-                .then(getFirst, consoleError)
+                .fold(get, playlistNum)
                 // => Playlist
-                .then(printTypeAndName, consoleError)
+                .then(printTypeAndName)
                 // => Playlist
-                .then(extractTracks, consoleError)
+                .fold(get, 'tracks')
                 // => list of Tracks
-                .then(mopidy.tracklist.add, consoleError)
+                .then(mopidy.tracklist.add)
                 // => list of TlTracks
-                .then(getFirst, consoleError)
+                .fold(get, trackNum)
                 // => TlTrack
-                .then(mopidy.playback.play, consoleError)
+                .then(mopidy.playback.play)
                 // => null
-                .then(printNowPlaying, consoleError);
+                .then(printNowPlaying)
+                // => null
+                .catch(console.error.bind(console))  // Handle errors here
+                // => null
+                .done();                       // ...or they'll be thrown here
         };
 
         var mopidy = new Mopidy();             // Connect to server
         mopidy.on(console.log.bind(console));  // Log all events
-        mopidy.on("state:online", queueAndPlayFirstPlaylist);
+        mopidy.on("state:online", queueAndPlay);
 
-9. The web page should now queue and play your first playlist every time your
+9. The web page should now queue and play your first playlist every time you
    load it. See the browser's console for output from the function, any errors,
    and all events that are emitted.

@@ -1,4 +1,6 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
+
+import os
 
 import mock
 
@@ -6,13 +8,13 @@ import tornado.testing
 import tornado.wsgi
 
 import mopidy
-from mopidy import http
 from mopidy.http import actor, handlers
 
 
 class HttpServerTest(tornado.testing.AsyncHTTPTestCase):
-    def get_app(self):
-        config = {
+
+    def get_config(self):
+        return {
             'http': {
                 'hostname': '127.0.0.1',
                 'port': 6680,
@@ -20,36 +22,80 @@ class HttpServerTest(tornado.testing.AsyncHTTPTestCase):
                 'zeroconf': '',
             }
         }
+
+    def get_app(self):
         core = mock.Mock()
         core.get_version = mock.MagicMock(name='get_version')
         core.get_version.return_value = mopidy.__version__
 
-        http_frontend = actor.HttpFrontend(config=config, core=core)
-        http_frontend.routers = [handlers.MopidyHttpRouter]
+        testapps = [dict(name='testapp')]
+        teststatics = [dict(name='teststatic')]
 
-        return tornado.web.Application(http_frontend._get_request_handlers())
+        apps = [{
+            'name': 'mopidy',
+            'factory': handlers.make_mopidy_app_factory(testapps, teststatics),
+        }]
 
-    def test_root_should_return_index(self):
-        response = self.fetch('/', method='GET')
+        http_server = actor.HttpServer(
+            config=self.get_config(), core=core, sockets=[],
+            apps=apps, statics=[])
+
+        return tornado.web.Application(http_server._get_request_handlers())
+
+
+class RootRedirectTest(HttpServerTest):
+
+    def test_should_redirect_to_mopidy_app(self):
+        response = self.fetch('/', method='GET', follow_redirects=False)
+
+        self.assertEqual(response.code, 302)
+        self.assertEqual(response.headers['Location'], '/mopidy/')
+
+
+class LegacyStaticDirAppTest(HttpServerTest):
+
+    def get_config(self):
+        config = super(LegacyStaticDirAppTest, self).get_config()
+        config['http']['static_dir'] = os.path.dirname(__file__)
+        return config
+
+    def test_should_return_index(self):
+        response = self.fetch('/', method='GET', follow_redirects=False)
+
+        self.assertEqual(response.code, 404, 'No index.html in this dir')
+
+    def test_should_return_static_files(self):
+        response = self.fetch('/test_server.py', method='GET')
 
         self.assertIn(
-            'Static content serving',
+            'test_should_return_static_files',
             tornado.escape.to_unicode(response.body))
         self.assertEqual(
             response.headers['X-Mopidy-Version'], mopidy.__version__)
         self.assertEqual(response.headers['Cache-Control'], 'no-cache')
 
-    def test_mopidy_should_return_index(self):
+
+class MopidyAppTest(HttpServerTest):
+
+    def test_should_return_index(self):
         response = self.fetch('/mopidy/', method='GET')
+        body = tornado.escape.to_unicode(response.body)
 
         self.assertIn(
-            'Here you can see events arriving from Mopidy in real time:',
-            tornado.escape.to_unicode(response.body))
+            'This web server is a part of the Mopidy music server.', body)
+        self.assertIn('testapp', body)
+        self.assertIn('teststatic', body)
         self.assertEqual(
             response.headers['X-Mopidy-Version'], mopidy.__version__)
         self.assertEqual(response.headers['Cache-Control'], 'no-cache')
 
-    def test_should_return_js(self):
+    def test_without_slash_should_redirect(self):
+        response = self.fetch('/mopidy', method='GET', follow_redirects=False)
+
+        self.assertEqual(response.code, 301)
+        self.assertEqual(response.headers['Location'], '/mopidy/')
+
+    def test_should_return_static_files(self):
         response = self.fetch('/mopidy/mopidy.js', method='GET')
 
         self.assertIn(
@@ -58,6 +104,9 @@ class HttpServerTest(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(
             response.headers['X-Mopidy-Version'], mopidy.__version__)
         self.assertEqual(response.headers['Cache-Control'], 'no-cache')
+
+
+class MopidyWebSocketHandlerTest(HttpServerTest):
 
     def test_should_return_ws(self):
         response = self.fetch('/mopidy/ws', method='GET')
@@ -72,6 +121,9 @@ class HttpServerTest(tornado.testing.AsyncHTTPTestCase):
         self.assertEqual(
             'Can "Upgrade" only to "WebSocket".',
             tornado.escape.to_unicode(response.body))
+
+
+class MopidyRPCHandlerTest(HttpServerTest):
 
     def test_should_return_rpc_error(self):
         cmd = tornado.escape.json_encode({'action': 'get_version'})
@@ -117,24 +169,8 @@ class HttpServerTest(tornado.testing.AsyncHTTPTestCase):
         self.assertIn('Content-Type', response.headers)
 
 
-class WsgiAppRouter(http.Router):
-    name = 'wsgi'
+class HttpServerWithStaticFilesTest(tornado.testing.AsyncHTTPTestCase):
 
-    def get_request_handlers(self):
-        def wsgi_app(environ, start_response):
-            status = '200 OK'
-            response_headers = [('Content-type', 'text/plain')]
-            start_response(status, response_headers)
-            return ['Hello, world!\n']
-
-        return [
-            ('(.*)', tornado.web.FallbackHandler, {
-                'fallback': tornado.wsgi.WSGIContainer(wsgi_app),
-            }),
-        ]
-
-
-class HttpServerWithWsgiAppTest(tornado.testing.AsyncHTTPTestCase):
     def get_app(self):
         config = {
             'http': {
@@ -146,13 +182,75 @@ class HttpServerWithWsgiAppTest(tornado.testing.AsyncHTTPTestCase):
         }
         core = mock.Mock()
 
-        http_frontend = actor.HttpFrontend(config=config, core=core)
-        http_frontend.routers = [WsgiAppRouter]
+        statics = [dict(name='static', path=os.path.dirname(__file__))]
 
-        return tornado.web.Application(http_frontend._get_request_handlers())
+        http_server = actor.HttpServer(
+            config=config, core=core, sockets=[], apps=[], statics=statics)
+
+        return tornado.web.Application(http_server._get_request_handlers())
+
+    def test_without_slash_should_redirect(self):
+        response = self.fetch('/static', method='GET', follow_redirects=False)
+
+        self.assertEqual(response.code, 301)
+        self.assertEqual(response.headers['Location'], '/static/')
+
+    def test_can_serve_static_files(self):
+        response = self.fetch('/static/test_server.py', method='GET')
+
+        self.assertEqual(200, response.code)
+        self.assertEqual(
+            response.headers['X-Mopidy-Version'], mopidy.__version__)
+        self.assertEqual(
+            response.headers['Cache-Control'], 'no-cache')
+
+
+def wsgi_app_factory(config, core):
+
+    def wsgi_app(environ, start_response):
+        status = '200 OK'
+        response_headers = [('Content-type', 'text/plain')]
+        start_response(status, response_headers)
+        return ['Hello, world!\n']
+
+    return [
+        ('(.*)', tornado.web.FallbackHandler, {
+            'fallback': tornado.wsgi.WSGIContainer(wsgi_app),
+        }),
+    ]
+
+
+class HttpServerWithWsgiAppTest(tornado.testing.AsyncHTTPTestCase):
+
+    def get_app(self):
+        config = {
+            'http': {
+                'hostname': '127.0.0.1',
+                'port': 6680,
+                'static_dir': None,
+                'zeroconf': '',
+            }
+        }
+        core = mock.Mock()
+
+        apps = [{
+            'name': 'wsgi',
+            'factory': wsgi_app_factory,
+        }]
+
+        http_server = actor.HttpServer(
+            config=config, core=core, sockets=[], apps=apps, statics=[])
+
+        return tornado.web.Application(http_server._get_request_handlers())
+
+    def test_without_slash_should_redirect(self):
+        response = self.fetch('/wsgi', method='GET', follow_redirects=False)
+
+        self.assertEqual(response.code, 301)
+        self.assertEqual(response.headers['Location'], '/wsgi/')
 
     def test_can_wrap_wsgi_apps(self):
-        response = self.fetch('/wsgi', method='GET')
+        response = self.fetch('/wsgi/', method='GET')
 
         self.assertEqual(200, response.code)
         self.assertIn(

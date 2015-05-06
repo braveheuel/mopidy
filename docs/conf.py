@@ -2,7 +2,7 @@
 
 """Mopidy documentation build configuration file"""
 
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import os
 import sys
@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__) + '/../'))
 
 
 class Mock(object):
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -34,13 +35,13 @@ class Mock(object):
         elif name == 'get_user_config_dir':
             # glib.get_user_config_dir()
             return str
-        elif (name[0] == name[0].upper()
-                # gst.interfaces.MIXER_TRACK_*
-                and not name.startswith('MIXER_TRACK_')
+        elif (name[0] == name[0].upper() and
+                # gst.Caps
+                not name.startswith('Caps') and
                 # gst.PadTemplate
-                and not name.startswith('PadTemplate')
+                not name.startswith('PadTemplate') and
                 # dbus.String()
-                and not name == 'String'):
+                not name == 'String'):
             return type(name, (), {})
         else:
             return Mock()
@@ -54,6 +55,7 @@ MOCK_MODULES = [
     'glib',
     'gobject',
     'gst',
+    'gst.pbutils',
     'pygst',
     'pykka',
     'pykka.actor',
@@ -98,11 +100,14 @@ source_suffix = '.rst'
 master_doc = 'index'
 
 project = 'Mopidy'
-copyright = '2009-2014, Stein Magnus Jodal and contributors'
+copyright = '2009-2015, Stein Magnus Jodal and contributors'
 
 from mopidy.utils.versioning import get_version
 release = get_version()
 version = '.'.join(release.split('.')[:2])
+
+# To make the build reproducible, avoid using today's date in the manpages
+today = '2015'
 
 exclude_trees = ['_build']
 
@@ -113,6 +118,9 @@ modindex_common_prefix = ['mopidy.']
 
 # -- Options for HTML output --------------------------------------------------
 
+# 'sphinx_rtd_theme' is bundled with Sphinx 1.3, which we don't have when
+# building the docs as part of the Debian packages on e.g. Debian wheezy.
+# html_theme = 'sphinx_rtd_theme'
 html_theme = 'default'
 html_theme_path = ['_themes']
 html_static_path = ['_static']
@@ -142,7 +150,7 @@ latex_documents = [
 
 man_pages = [
     (
-        'commands/mopidy',
+        'command',
         'mopidy',
         'music server',
         '',
@@ -156,8 +164,10 @@ man_pages = [
 extlinks = {
     'issue': ('https://github.com/mopidy/mopidy/issues/%s', '#'),
     'commit': ('https://github.com/mopidy/mopidy/commit/%s', 'commit '),
+    'js': ('https://github.com/mopidy/mopidy.js/issues/%s', 'mopidy.js#'),
     'mpris': (
         'https://github.com/mopidy/mopidy-mpris/issues/%s', 'mopidy-mpris#'),
+    'discuss': ('https://discuss.mopidy.com/t/%s', 'discuss.mopidy.com/t/'),
 }
 
 

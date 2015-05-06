@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 from mopidy.mpd import exceptions, protocol
 
@@ -107,4 +107,4 @@ def urlhandlers(context):
     """
     return [
         ('handler', uri_scheme)
-        for uri_scheme in context.core.uri_schemes.get()]
+        for uri_scheme in context.core.get_uri_schemes().get()]

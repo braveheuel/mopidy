@@ -1,14 +1,15 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import functools
 import os
 import platform
+import sys
+
+import pkg_resources
 
 import pygst
 pygst.require('0.10')
 import gst  # noqa
-
-import pkg_resources
 
 from mopidy.utils import formatting
 
@@ -24,6 +25,7 @@ def format_dependency_list(adapters=None):
             for dist_name in dist_names]
 
         adapters = [
+            executable_info,
             platform_info,
             python_info,
             functools.partial(pkg_info, 'Mopidy', True)
@@ -61,6 +63,13 @@ def _format_dependency(dep_info):
                 formatting.indent(sub_dep_lines, places=2, singles=True))
 
     return '\n'.join(lines)
+
+
+def executable_info():
+    return {
+        'name': 'Executable',
+        'version': sys.argv[0],
+    }
 
 
 def platform_info():
@@ -143,22 +152,23 @@ def _gstreamer_check_elements():
         # Spotify
         'appsrc',
 
-        # Mixers and sinks
-        'alsamixer',
+        # Audio sinks
         'alsasink',
-        'ossmixer',
         'osssink',
-        'oss4mixer',
         'oss4sink',
-        'pulsemixer',
         'pulsesink',
 
         # MP3 encoding and decoding
-        'mp3parse',
-        'mad',
+        #
+        # One of flump3dec, mad, and mpg123audiodec is required for MP3
+        # playback.
+        'flump3dec',
         'id3demux',
         'id3v2mux',
         'lame',
+        'mad',
+        'mp3parse',
+        # 'mpg123audiodec',  # Only available in GStreamer 1.x
 
         # Ogg Vorbis encoding and decoding
         'vorbisdec',

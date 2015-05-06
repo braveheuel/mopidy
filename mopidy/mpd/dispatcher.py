@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import logging
 import re
@@ -13,6 +13,7 @@ protocol.load_protocol_modules()
 
 
 class MpdDispatcher(object):
+
     """
     The MPD session feeds the MPD dispatcher with requests. The dispatcher
     finds the correct handler, processes the request and sends the response
@@ -21,7 +22,7 @@ class MpdDispatcher(object):
 
     _noidle = re.compile(r'^noidle$')
 
-    def __init__(self, session=None, config=None, core=None):
+    def __init__(self, session=None, config=None, core=None, uri_map=None):
         self.config = config
         self.authenticated = False
         self.command_list_receiving = False
@@ -29,7 +30,7 @@ class MpdDispatcher(object):
         self.command_list = []
         self.command_list_index = None
         self.context = MpdContext(
-            self, session=session, config=config, core=core)
+            self, session=session, config=config, core=core, uri_map=uri_map)
 
     def handle_request(self, request, current_command_list_index=None):
         """Dispatch incoming requests to the correct handler."""
@@ -163,14 +164,18 @@ class MpdDispatcher(object):
 
     def _call_handler(self, request):
         tokens = tokenize.split(request)
+        # TODO: check that blacklist items are valid commands?
+        blacklist = self.config['mpd'].get('command_blacklist', [])
+        if tokens and tokens[0] in blacklist:
+            logger.warning(
+                'MPD client used blacklisted command: %s', tokens[0])
+            raise exceptions.MpdDisabled(command=tokens[0])
         try:
             return protocol.commands.call(tokens, context=self.context)
         except exceptions.MpdAckError as exc:
             if exc.command is None:
                 exc.command = tokens[0]
             raise
-        except LookupError:
-            raise exceptions.MpdUnknownCommand(command=tokens[0])
 
     def _format_response(self, response):
         formatted_response = []
@@ -206,6 +211,7 @@ class MpdDispatcher(object):
 
 
 class MpdContext(object):
+
     """
     This object is passed as the first argument to all MPD command handlers to
     give the command handlers access to important parts of Mopidy.
@@ -229,9 +235,10 @@ class MpdContext(object):
     #: The subsytems that we want to be notified about in idle mode.
     subscriptions = None
 
-    _invalid_playlist_chars = re.compile(r'[\n\r/]')
+    _uri_map = None
 
-    def __init__(self, dispatcher, session=None, config=None, core=None):
+    def __init__(self, dispatcher, session=None, config=None, core=None,
+                 uri_map=None):
         self.dispatcher = dispatcher
         self.session = session
         if config is not None:
@@ -239,67 +246,52 @@ class MpdContext(object):
         self.core = core
         self.events = set()
         self.subscriptions = set()
-        self._playlist_uri_from_name = {}
-        self._playlist_name_from_uri = {}
-        self.refresh_playlists_mapping()
+        self._uri_map = uri_map
 
-    def create_unique_name(self, playlist_name):
-        stripped_name = self._invalid_playlist_chars.sub(' ', playlist_name)
-        name = stripped_name
-        i = 2
-        while name in self._playlist_uri_from_name:
-            name = '%s [%d]' % (stripped_name, i)
-            i += 1
-        return name
-
-    def refresh_playlists_mapping(self):
-        """
-        Maintain map between playlists and unique playlist names to be used by
-        MPD
-        """
-        if self.core is not None:
-            self._playlist_uri_from_name.clear()
-            self._playlist_name_from_uri.clear()
-            for playlist in self.core.playlists.playlists.get():
-                if not playlist.name:
-                    continue
-                # TODO: add scheme to name perhaps 'foo (spotify)' etc.
-                name = self.create_unique_name(playlist.name)
-                self._playlist_uri_from_name[name] = playlist.uri
-                self._playlist_name_from_uri[playlist.uri] = name
-
-    def lookup_playlist_from_name(self, name):
+    def lookup_playlist_uri_from_name(self, name):
         """
         Helper function to retrieve a playlist from its unique MPD name.
         """
-        if not self._playlist_uri_from_name:
-            self.refresh_playlists_mapping()
-        if name not in self._playlist_uri_from_name:
-            return None
-        uri = self._playlist_uri_from_name[name]
-        return self.core.playlists.lookup(uri).get()
+        return self._uri_map.playlist_uri_from_name(name)
 
     def lookup_playlist_name_from_uri(self, uri):
         """
         Helper function to retrieve the unique MPD playlist name from its uri.
         """
-        if uri not in self._playlist_name_from_uri:
-            self.refresh_playlists_mapping()
-        return self._playlist_name_from_uri[uri]
+        return self._uri_map.playlist_name_from_uri(uri)
 
     def browse(self, path, recursive=True, lookup=True):
-        # TODO: consider caching lookups for less work mapping path->uri
+        """
+        Browse the contents of a given directory path.
+
+        Returns a sequence of two-tuples ``(path, data)``.
+
+        If ``recursive`` is true, it returns results for all entries in the
+        given path.
+
+        If ``lookup`` is true and the ``path`` is to a track, the returned
+        ``data`` is a future which will contain the results from looking up
+        the URI with :meth:`mopidy.core.LibraryController.lookup` If ``lookup``
+        is false and the ``path`` is to a track, the returned ``data`` will be
+        a :class:`mopidy.models.Ref` for the track.
+
+        For all entries that are not tracks, the returned ``data`` will be
+        :class:`None`.
+        """
+
         path_parts = re.findall(r'[^/]+', path or '')
         root_path = '/'.join([''] + path_parts)
-        uri = None
 
-        for part in path_parts:
-            for ref in self.core.library.browse(uri).get():
-                if ref.type == ref.DIRECTORY and ref.name == part:
-                    uri = ref.uri
-                    break
-            else:
-                raise exceptions.MpdNoExistError('Not found')
+        uri = self._uri_map.uri_from_name(root_path)
+        if uri is None:
+            for part in path_parts:
+                for ref in self.core.library.browse(uri).get():
+                    if ref.type != ref.TRACK and ref.name == part:
+                        uri = ref.uri
+                        break
+                else:
+                    raise exceptions.MpdNoExistError('Not found')
+            root_path = self._uri_map.insert(root_path, uri)
 
         if recursive:
             yield (root_path, None)
@@ -309,13 +301,16 @@ class MpdContext(object):
             base_path, future = path_and_futures.pop()
             for ref in future.get():
                 path = '/'.join([base_path, ref.name.replace('/', '')])
-                if ref.type == ref.DIRECTORY:
+                path = self._uri_map.insert(path, ref.uri)
+
+                if ref.type == ref.TRACK:
+                    if lookup:
+                        # TODO: can we lookup all the refs at once now?
+                        yield (path, self.core.library.lookup(uris=[ref.uri]))
+                    else:
+                        yield (path, ref)
+                else:
                     yield (path, None)
                     if recursive:
                         path_and_futures.append(
                             (path, self.core.library.browse(ref.uri)))
-                elif ref.type == ref.TRACK:
-                    if lookup:
-                        yield (path, self.core.library.lookup(ref.uri))
-                    else:
-                        yield (path, ref)

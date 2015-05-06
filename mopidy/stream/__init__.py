@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
 import os
 
@@ -19,6 +19,7 @@ class Extension(ext.Extension):
     def get_config_schema(self):
         schema = super(Extension, self).get_config_schema()
         schema['protocols'] = config.List()
+        schema['metadata_blacklist'] = config.List(optional=True)
         schema['timeout'] = config.Integer(
             minimum=1000, maximum=1000 * 60 * 60)
         return schema

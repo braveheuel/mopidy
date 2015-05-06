@@ -1,6 +1,5 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
-import datetime
 import unittest
 
 from mopidy.models import Album, Artist, Playlist, TlTrack, Track
@@ -20,20 +19,22 @@ class TrackMpdFormatTest(unittest.TestCase):
         composers=[Artist(name='a composer')],
         performers=[Artist(name='a performer')],
         genre='a genre',
-        date=datetime.date(1977, 1, 1),
-        disc_no='1',
+        date='1977-01-01',
+        disc_no=1,
         comment='a comment',
         length=137000,
     )
 
-    def setUp(self):
+    def setUp(self):  # noqa: N802
         self.media_dir = '/dir/subdir'
         mtime.set_fake_time(1234567)
 
-    def tearDown(self):
+    def tearDown(self):  # noqa: N802
         mtime.undo_fake()
 
     def test_track_to_mpd_format_for_empty_track(self):
+        # TODO: this is likely wrong, see:
+        # https://github.com/mopidy/mopidy/issues/923#issuecomment-79584110
         result = translator.track_to_mpd_format(Track())
         self.assertIn(('file', ''), result)
         self.assertIn(('Time', 0), result)
@@ -71,34 +72,34 @@ class TrackMpdFormatTest(unittest.TestCase):
         self.assertIn(('Performer', 'a performer'), result)
         self.assertIn(('Genre', 'a genre'), result)
         self.assertIn(('Track', '7/13'), result)
-        self.assertIn(('Date', datetime.date(1977, 1, 1)), result)
-        self.assertIn(('Disc', '1'), result)
-        self.assertIn(('Comment', 'a comment'), result)
+        self.assertIn(('Date', '1977-01-01'), result)
+        self.assertIn(('Disc', 1), result)
         self.assertIn(('Pos', 9), result)
         self.assertIn(('Id', 122), result)
-        self.assertEqual(len(result), 15)
+        self.assertNotIn(('Comment', 'a comment'), result)
+        self.assertEqual(len(result), 14)
 
     def test_track_to_mpd_format_musicbrainz_trackid(self):
-        track = self.track.copy(musicbrainz_id='foo')
+        track = self.track.replace(musicbrainz_id='foo')
         result = translator.track_to_mpd_format(track)
         self.assertIn(('MUSICBRAINZ_TRACKID', 'foo'), result)
 
     def test_track_to_mpd_format_musicbrainz_albumid(self):
-        album = self.track.album.copy(musicbrainz_id='foo')
-        track = self.track.copy(album=album)
+        album = self.track.album.replace(musicbrainz_id='foo')
+        track = self.track.replace(album=album)
         result = translator.track_to_mpd_format(track)
         self.assertIn(('MUSICBRAINZ_ALBUMID', 'foo'), result)
 
     def test_track_to_mpd_format_musicbrainz_albumartistid(self):
-        artist = list(self.track.artists)[0].copy(musicbrainz_id='foo')
-        album = self.track.album.copy(artists=[artist])
-        track = self.track.copy(album=album)
+        artist = list(self.track.artists)[0].replace(musicbrainz_id='foo')
+        album = self.track.album.replace(artists=[artist])
+        track = self.track.replace(album=album)
         result = translator.track_to_mpd_format(track)
         self.assertIn(('MUSICBRAINZ_ALBUMARTISTID', 'foo'), result)
 
     def test_track_to_mpd_format_musicbrainz_artistid(self):
-        artist = list(self.track.artists)[0].copy(musicbrainz_id='foo')
-        track = self.track.copy(artists=[artist])
+        artist = list(self.track.artists)[0].replace(musicbrainz_id='foo')
+        track = self.track.replace(artists=[artist])
         result = translator.track_to_mpd_format(track)
         self.assertIn(('MUSICBRAINZ_ARTISTID', 'foo'), result)
 
@@ -114,6 +115,7 @@ class TrackMpdFormatTest(unittest.TestCase):
 
 
 class PlaylistMpdFormatTest(unittest.TestCase):
+
     def test_mpd_format(self):
         playlist = Playlist(tracks=[
             Track(track_no=1), Track(track_no=2), Track(track_no=3)])

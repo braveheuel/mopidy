@@ -1,6 +1,5 @@
-from __future__ import unicode_literals
+from __future__ import absolute_import, unicode_literals
 
-import ConfigParser as configparser
 import io
 
 import gobject
@@ -8,6 +7,8 @@ import gobject
 import pygst
 pygst.require('0.10')
 import gst  # noqa
+
+from mopidy.compat import configparser
 
 try:
     import xml.etree.cElementTree as elementtree
@@ -18,16 +19,16 @@ except ImportError:
 # TODO: make detect_FOO_header reusable in general mopidy code.
 # i.e. give it just a "peek" like function.
 def detect_m3u_header(typefind):
-    return typefind.peek(0, 8) == b'#EXTM3U\n'
+    return typefind.peek(0, 7).upper() == b'#EXTM3U'
 
 
 def detect_pls_header(typefind):
-    return typefind.peek(0, 11).lower() == b'[playlist]\n'
+    return typefind.peek(0, 10).lower() == b'[playlist]'
 
 
 def detect_xspf_header(typefind):
     data = typefind.peek(0, 150)
-    if b'xspf' not in data:
+    if b'xspf' not in data.lower():
         return False
 
     try:
@@ -41,7 +42,7 @@ def detect_xspf_header(typefind):
 
 def detect_asx_header(typefind):
     data = typefind.peek(0, 50)
-    if b'asx' not in data:
+    if b'asx' not in data.lower():
         return False
 
     try:
@@ -57,11 +58,11 @@ def parse_m3u(data):
     # TODO: convert non URIs to file URIs.
     found_header = False
     for line in data.readlines():
-        if found_header or line.startswith('#EXTM3U'):
+        if found_header or line.startswith(b'#EXTM3U'):
             found_header = True
         else:
             continue
-        if not line.startswith('#') and line.strip():
+        if not line.startswith(b'#') and line.strip():
             yield line.strip()
 
 
@@ -76,12 +77,13 @@ def parse_pls(data):
     for section in cp.sections():
         if section.lower() != 'playlist':
             continue
-        for i in xrange(cp.getint(section, 'numberofentries')):
-            yield cp.get(section, 'file%d' % (i+1))
+        for i in range(cp.getint(section, 'numberofentries')):
+            yield cp.get(section, 'file%d' % (i + 1))
 
 
 def parse_xspf(data):
     try:
+        # Last element will be root.
         for event, element in elementtree.iterparse(data):
             element.tag = element.tag.lower()  # normalize
     except elementtree.ParseError:
@@ -94,13 +96,17 @@ def parse_xspf(data):
 
 def parse_asx(data):
     try:
+        # Last element will be root.
         for event, element in elementtree.iterparse(data):
             element.tag = element.tag.lower()  # normalize
     except elementtree.ParseError:
         return
 
-    for ref in element.findall('entry/ref'):
+    for ref in element.findall('entry/ref[@href]'):
         yield ref.get('href', '').strip()
+
+    for entry in element.findall('entry[@href]'):
+        yield entry.get('href', '').strip()
 
 
 def parse_urilist(data):
@@ -130,6 +136,7 @@ def register_typefinders():
 
 
 class BasePlaylistElement(gst.Bin):
+
     """Base class for creating GStreamer elements for playlist support.
 
     This element performs the following steps:
